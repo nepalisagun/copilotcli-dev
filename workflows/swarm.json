@@ -21,7 +21,7 @@
     },
     {
       "parameters": {
-        "command": "gh copilot suggest --help"
+        "command": "gh copilot suggest \"Autonomous codegen: @src/models/[model_name].py with sklearn/XGBoost. Use @knowledge/ml-best-practices.md patterns. Pytest stubs + type hints. Commit feat: [model]\""
       },
       "id": "codegen-agent-node",
       "name": "Codegen Agent",
@@ -38,7 +38,7 @@
     },
     {
       "parameters": {
-        "command": "gh copilot suggest --help"
+        "command": "gh copilot suggest \"Autonomous tester: pytest @tests/test_[model].py → 95% coverage. Fix failures iteratively. @knowledge/notes.md style guide.\""
       },
       "id": "test-agent-node",
       "name": "Test Agent",
@@ -55,7 +55,7 @@
     },
     {
       "parameters": {
-        "command": "gh copilot suggest --help"
+        "command": "gh copilot suggest \"Autonomous deployer: Update @Dockerfile, @k8s/deployment.yaml, .github/workflows/ci.yml. docker build -t [service] . Test run.\""
       },
       "id": "deploy-agent-node",
       "name": "Deploy Agent",
