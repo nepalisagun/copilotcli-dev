@@ -54,15 +54,11 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -q requests pandas scikit-learn fastapi uvicorn pytest pytest-cov
+          pip install -q -r requirements.txt
 
-      - name: Run unit tests
+      - name: Run tests with coverage
         run: |
-          pytest tests/unit/ -v --cov=src --cov-report=xml --tb=short 2>/dev/null || echo "⚠️  No unit tests found"
-
-      - name: Run integration tests
-        run: |
-          pytest tests/integration/ -v --tb=short 2>/dev/null || echo "⚠️  No integration tests found"
+          pytest tests/api_test.py -v --cov=src --cov-report=xml --tb=short
 
       - name: Upload coverage
         uses: codecov/codecov-action@v3
