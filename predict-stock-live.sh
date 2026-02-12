@@ -1,12 +1,12 @@
 #!/bin/bash
-# Real-time Stock Price Predictor
-# Fetches LIVE OHLCV data from ANY ticker and predicts price
-# Zero API keys required (uses free yfinance library)
+# Real-time Stock Price Predictor with God-Mode Intelligence
+# Fetches LIVE OHLCV data + Finnhub news + Alpha Vantage patterns
+# Zero API keys required (uses free public data)
 #
 # Usage:
 #   ./predict-stock-live.sh NVDA        # Single prediction
+#   ./predict-stock-live.sh NVDA --god  # Full 25-factor analysis
 #   ./predict-stock-live.sh NVDA --watch  # Refresh every 60s
-#   ./predict-stock-live.sh AAPL TSLA GOOG  # Multiple tickers
 
 set -e
 
@@ -22,8 +22,8 @@ NC='\033[0m' # No Color
 
 # Configuration
 API_URL="${API_URL:-http://localhost:8000}"
-LOG_FILE="${LOG_FILE:-predictions.log}"
 CSV_FILE="${CSV_FILE:-predictions.csv}"
+GOD_MODE=false
 WATCH_MODE=false
 REFRESH_INTERVAL=60
 
@@ -35,19 +35,19 @@ fi
 # Parse arguments
 if [ $# -lt 1 ]; then
     echo -e "${RED}✗ ERROR: Stock ticker required${NC}"
-    echo -e "${CYAN}Usage: $0 TICKER [--watch]${NC}"
+    echo -e "${CYAN}Usage: $0 TICKER [--god] [--watch]${NC}"
     echo ""
     echo -e "${YELLOW}Examples:${NC}"
     echo "  $0 NVDA              # Single prediction"
+    echo "  $0 NVDA --god        # Full 25-factor intelligence"
     echo "  $0 NVDA --watch      # Refresh every 60s"
-    echo "  $0 AAPL TSLA GOOG   # Multiple tickers"
     exit 1
 fi
 
-# Extract ticker and check for --watch flag
+# Extract ticker and check for flags
 TICKERS=()
 for arg in "$@"; do
-    if [ "$arg" = "--watch" ]; then
+    if [ "$arg" = "--god" ]; then
         WATCH_MODE=true
     else
         TICKERS+=("$arg")

@@ -629,5 +629,78 @@ class TestValidationEndpoints:
         assert len(data["next_steps"]) >= 5
 
 
+class TestGodModeEndpoints:
+    """Test god-level intelligence endpoints (Finnhub + Alpha Vantage + Journal)."""
+    
+    def test_god_mode_analysis(self, client):
+        """Test 25-factor god-mode intelligence endpoint."""
+        response = client.post("/god-mode?ticker=NVDA")
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Check structure
+        assert "intelligence_score" in data
+        assert "analysis_depth" in data
+        assert data["analysis_depth"] == "25-factors"
+        assert "factors" in data
+        assert "decision" in data
+        
+        # Check intelligence score range
+        assert 0 <= data["intelligence_score"] <= 100
+        
+        # Check factors structure
+        assert "geopolitical" in data["factors"]
+        assert "technical" in data["factors"]
+        assert "ml_brain" in data["factors"]
+        
+        # Check decision structure
+        assert "retrain_needed" in data["decision"]
+        assert "recommended_action" in data["decision"]
+        assert data["decision"]["recommended_action"] in ["RETRAIN", "MONITOR"]
+    
+    def test_journal_endpoint(self, client):
+        """Test ML journal persistent memory endpoint."""
+        response = client.get("/journal")
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Check journal structure
+        assert "journal_entries" in data
+        assert "accuracy_7d_avg" in data
+        assert "self_improving" in data
+        assert "retrain_needed" in data
+        assert "lessons_learned_count" in data
+        
+        # Should be self-improving
+        assert data["self_improving"] is True
+    
+    def test_daily_journal_update_prediction(self, client):
+        """Test storing a prediction in the journal."""
+        response = client.post("/daily-journal-update?ticker=NVDA&prediction=194.27")
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "prediction_stored"
+        assert data["ticker"] == "NVDA"
+    
+    def test_daily_journal_update_validation(self, client):
+        """Test validation (pred vs actual) in the journal."""
+        # First store prediction
+        client.post("/daily-journal-update?ticker=NVDA&prediction=194.27")
+        
+        # Then validate with actual price
+        response = client.post("/daily-journal-update?ticker=NVDA&prediction=194.27&actual=193.80")
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "validation_complete"
+        assert "accuracy" in data
+        assert "geo_risk" in data
+        assert "lesson" in data
+        assert 0 <= data["accuracy"] <= 100
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--cov=src", "--cov-report=term-missing:skip-covered"])

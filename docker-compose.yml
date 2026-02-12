@@ -119,12 +119,15 @@ services:
       - ./src:/app/src:ro
       - ./models:/models:ro
       - ./knowledge:/knowledge:ro
+      - ./ml-journal.json:/app/ml-journal.json  # Persistent brain
+      - ./LESSONS.md:/app/LESSONS.md            # Human lessons
+      - ./predictions.csv:/app/predictions.csv  # Prediction log
     ports:
       - "8000:8000"
     networks:
       - copilot-swarm
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/journal"]
       interval: 30s
       timeout: 10s
       retries: 3
