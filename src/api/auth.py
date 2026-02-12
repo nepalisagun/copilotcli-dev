@@ -1,7 +1,6 @@
 """Authentication and authorization for API."""
 
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthCredentials
+from fastapi import Depends, HTTPException, status, Header
 from jose import JWTError, jwt
 from datetime import datetime, timedelta
 from typing import Optional
@@ -11,8 +10,6 @@ import os
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
-
-security = HTTPBearer()
 
 
 class TokenManager:
@@ -43,16 +40,21 @@ class TokenManager:
             return None
 
 
-async def get_current_user(credentials: HTTPAuthCredentials = Depends(security)) -> dict:
+async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     """Get current authenticated user from token."""
-    token = credentials.credentials
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authenticated",
+        )
+    
+    token = authorization.replace("Bearer ", "")
     payload = TokenManager.verify_token(token)
     
     if payload is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired token",
-            headers={"WWW-Authenticate": "Bearer"},
         )
     
     user_id = payload.get("sub")
