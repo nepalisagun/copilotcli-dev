@@ -173,6 +173,23 @@ else
 fi
 echo ""
 
+# Test 10: DEMO - Real-time Stock Predictor
+echo "🔟  REAL-TIME STOCK PREDICTOR DEMO"
+echo "📈 Testing live stock predictions..."
+if [ "$health_response" = "200" ]; then
+    if command -v python3 &> /dev/null && python3 -c "import yfinance" 2>/dev/null; then
+        echo "   ✓ yfinance available"
+        echo "   📊 Example: ./predict-stock-live.sh NVDA"
+        echo "   📊 Watch mode: ./predict-stock-live.sh TSLA --watch"
+        echo "   📊 Multiple: ./predict-stock-live.sh AAPL MSFT GOOG"
+    else
+        echo "   ⚠️  yfinance not installed (pip install yfinance)"
+    fi
+else
+    echo "   ⓘ API not accessible for live predictions"
+fi
+echo ""
+
 # Test 10: Build Summary
 echo "🎯 FINAL SUMMARY"
 echo "================="
