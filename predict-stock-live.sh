@@ -22,6 +22,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 API_URL="${API_URL:-http://localhost:8000}"
+LOG_FILE="${LOG_FILE:-predictions.log}"
 WATCH_MODE=false
 REFRESH_INTERVAL=60
 
@@ -166,6 +167,17 @@ try:
             
             pred = result.get('predictions', [0])[0]
             conf = result.get('confidence', 0)
+            
+            # Log prediction for validation
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            log_entry = f"{timestamp} | {ticker} | PRED: \${pred:.2f} | ACTUAL: pending | LOG_ONLY\n"
+            
+            try:
+                with open("$LOG_FILE", "a") as log:
+                    log.write(log_entry)
+            except Exception:
+                pass  # Continue even if logging fails
             
             print(f"\n\033[0;34m🔮 PREDICTION\033[0m")
             print(f"  Next Price: \033[0;32m\${pred:.2f}\033[0m")

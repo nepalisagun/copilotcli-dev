@@ -563,5 +563,71 @@ class TestEdgeCases:
         assert isinstance(pred, (int, float))
 
 
+class TestValidationEndpoints:
+    """Test validation and root cause analysis endpoints."""
+    
+    def test_validate_accurate_prediction(self, client):
+        """Test validation endpoint with accurate prediction."""
+        response = client.post(
+            "/validate",
+            json={
+                "ticker": "NVDA",
+                "timestamp": "2026-02-12 10:30:00",
+                "predicted": 194.27,
+                "actual": 194.00
+            }
+        )
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["ticker"] == "NVDA"
+        assert data["accuracy"] >= 99.0
+        assert "✅ ACCURATE" in data["status"]
+    
+    def test_validate_low_accuracy_prediction(self, client):
+        """Test validation endpoint with low accuracy prediction."""
+        response = client.post(
+            "/validate",
+            json={
+                "ticker": "TSLA",
+                "timestamp": "2026-02-12 10:30:00",
+                "predicted": 412.18,
+                "actual": 350.00
+            }
+        )
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["accuracy"] < 85.0
+        assert "⚠️" in data["status"]
+        assert "root_cause" in data
+    
+    def test_root_cause_analysis(self, client):
+        """Test root cause analysis endpoint."""
+        response = client.get("/root-cause")
+        
+        assert response.status_code == 200
+        data = response.json()
+        
+        # Either has predictions or 'message' field
+        if "total_recent_predictions" in data:
+            assert "low_accuracy_count" in data
+            assert "root_cause_analysis" in data
+            assert "geopolitical" in data["root_cause_analysis"]
+            assert "financial" in data["root_cause_analysis"]
+            assert "algorithm" in data["root_cause_analysis"]
+    
+    def test_trigger_retrain(self, client):
+        """Test model retraining trigger endpoint."""
+        response = client.post("/trigger-retrain")
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "RETRAIN INITIATED"
+        assert "CODEGEN_AGENT" in data["action"]
+        assert "next_steps" in data
+        assert len(data["next_steps"]) >= 5
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--cov=src", "--cov-report=term-missing:skip-covered"])
