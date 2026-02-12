@@ -1,0 +1,1 @@
+"# Copilot CLI Development Workspace" 
