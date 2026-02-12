@@ -228,8 +228,8 @@ class TestPrediction:
 class TestBatchPrediction:
     """Test batch prediction from CSV."""
     
-    def test_batch_predict_after_training(self, client, sample_csv_data):
-        """Test batch prediction from CSV data."""
+    def test_batch_predict_csv_after_training(self, client, sample_csv_data):
+        """Test batch prediction from CSV string data."""
         # First train
         client.post(
             "/train",
@@ -239,9 +239,9 @@ class TestBatchPrediction:
             }
         )
         
-        # Batch predict
+        # Batch predict from CSV string
         response = client.post(
-            "/batch-predict",
+            "/batch-predict-csv",
             json={"csv_data": sample_csv_data}
         )
         
@@ -250,15 +250,58 @@ class TestBatchPrediction:
         assert "predictions" in data
         assert len(data["predictions"]) == 10
         assert data["count"] == 10
+        
+        # Verify prediction items have confidence
+        for pred in data["predictions"]:
+            assert "predicted_price" in pred
+            assert "confidence" in pred
+            assert 0 <= pred["confidence"] <= 1
 
-    def test_batch_predict_without_training(self, client, sample_csv_data):
+    def test_batch_predict_csv_without_training(self, client, sample_csv_data):
         """Test batch predict fails without training."""
         response = client.post(
-            "/batch-predict",
+            "/batch-predict-csv",
             json={"csv_data": sample_csv_data}
         )
         
         assert response.status_code == 503
+
+    def test_batch_predict_file_streaming(self, client, sample_csv_data):
+        """Test batch prediction from file with streaming response."""
+        import tempfile
+        import os
+        
+        # First train
+        client.post(
+            "/train",
+            json={
+                "csv_data": sample_csv_data,
+                "target_column": "Close"
+            }
+        )
+        
+        # Create temporary CSV file
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.csv', delete=False) as f:
+            f.write(sample_csv_data)
+            temp_file = f.name
+        
+        try:
+            # Batch predict with file upload
+            with open(temp_file, 'rb') as f:
+                files = {"file": (temp_file, f, "text/csv")}
+                response = client.post("/batch-predict", files=files)
+            
+            assert response.status_code == 200
+            # Streaming response returns NDJSON
+            lines = response.text.strip().split('\n')
+            assert len(lines) == 10
+            
+            # Check header
+            assert "X-Total-Predictions" in response.headers
+            assert response.headers["X-Total-Predictions"] == "10"
+        
+        finally:
+            os.unlink(temp_file)
 
 
 class TestModelInfo:
