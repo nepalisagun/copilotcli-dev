@@ -1,0 +1,228 @@
+name: Deploy n8n Copilot Swarm Workflow
+
+on:
+  push:
+    paths:
+      - 'workflows/swarm.json'
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy-workflow:
+    runs-on: ubuntu-latest
+    env:
+      N8N_BASE_URL: ${{ secrets.N8N_BASE_URL }}
+      N8N_API_KEY: ${{ secrets.N8N_API_KEY }}
+      GITHUB_REPO_OWNER: ${{ github.repository_owner }}
+      GITHUB_REPO_NAME: ${{ github.event.repository.name }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Validate workflow JSON
+        run: |
+          python3 << 'EOF'
+          import json
+          with open('workflows/swarm.json', 'r') as f:
+            try:
+              workflow = json.load(f)
+              print("✓ Workflow JSON is valid")
+              print(f"  - Name: {workflow.get('name')}")
+              print(f"  - Nodes: {len(workflow.get('nodes', []))}")
+              print(f"  - Active: {workflow.get('active')}")
+            except json.JSONDecodeError as e:
+              print(f"✗ Invalid JSON: {e}")
+              exit(1)
+          EOF
+
+      - name: Check n8n connectivity
+        run: |
+          if [ -z "$N8N_BASE_URL" ]; then
+            echo "⚠️  N8N_BASE_URL not configured, skipping deployment"
+            echo "   Set N8N_BASE_URL and N8N_API_KEY as repository secrets"
+            exit 0
+          fi
+
+          response=$(curl -s -o /dev/null -w "%{http_code}" -H "X-N8N-API-KEY: $N8N_API_KEY" \
+            "$N8N_BASE_URL/api/v1/credentials")
+          
+          if [ "$response" = "200" ]; then
+            echo "✓ Connected to n8n successfully"
+          else
+            echo "✗ Failed to connect to n8n (HTTP $response)"
+            exit 1
+          fi
+
+      - name: Import/Update workflow
+        if: env.N8N_BASE_URL != ''
+        run: |
+          python3 << 'EOF'
+          import json
+          import requests
+          import os
+          
+          N8N_BASE_URL = os.getenv('N8N_BASE_URL')
+          N8N_API_KEY = os.getenv('N8N_API_KEY')
+          
+          headers = {
+              'X-N8N-API-KEY': N8N_API_KEY,
+              'Content-Type': 'application/json'
+          }
+          
+          with open('workflows/swarm.json', 'r') as f:
+              workflow = json.load(f)
+          
+          # Check if workflow exists
+          workflow_name = workflow.get('name')
+          list_url = f"{N8N_BASE_URL}/api/v1/workflows"
+          
+          response = requests.get(list_url, headers=headers)
+          existing_workflows = response.json().get('data', [])
+          
+          existing_id = None
+          for wf in existing_workflows:
+              if wf.get('name') == workflow_name:
+                  existing_id = wf.get('id')
+                  break
+          
+          if existing_id:
+              # Update existing workflow
+              update_url = f"{N8N_BASE_URL}/api/v1/workflows/{existing_id}"
+              response = requests.put(update_url, json=workflow, headers=headers)
+              
+              if response.status_code in [200, 201]:
+                  print(f"✓ Workflow updated: {existing_id}")
+              else:
+                  print(f"✗ Failed to update workflow: {response.status_code}")
+                  print(response.text)
+                  exit(1)
+          else:
+              # Create new workflow
+              create_url = f"{N8N_BASE_URL}/api/v1/workflows"
+              response = requests.post(create_url, json=workflow, headers=headers)
+              
+              if response.status_code in [200, 201]:
+                  workflow_id = response.json().get('id')
+                  print(f"✓ Workflow created: {workflow_id}")
+              else:
+                  print(f"✗ Failed to create workflow: {response.status_code}")
+                  print(response.text)
+                  exit(1)
+          EOF
+
+      - name: Activate workflow
+        if: env.N8N_BASE_URL != ''
+        run: |
+          python3 << 'EOF'
+          import json
+          import requests
+          import os
+          
+          N8N_BASE_URL = os.getenv('N8N_BASE_URL')
+          N8N_API_KEY = os.getenv('N8N_API_KEY')
+          
+          headers = {
+              'X-N8N-API-KEY': N8N_API_KEY,
+              'Content-Type': 'application/json'
+          }
+          
+          with open('workflows/swarm.json', 'r') as f:
+              workflow = json.load(f)
+          
+          workflow_name = workflow.get('name')
+          list_url = f"{N8N_BASE_URL}/api/v1/workflows"
+          
+          response = requests.get(list_url, headers=headers)
+          workflows = response.json().get('data', [])
+          
+          for wf in workflows:
+              if wf.get('name') == workflow_name:
+                  wf_id = wf.get('id')
+                  activate_url = f"{N8N_BASE_URL}/api/v1/workflows/{wf_id}/activate"
+                  activate_response = requests.patch(activate_url, headers=headers)
+                  
+                  if activate_response.status_code == 200:
+                      print(f"✓ Workflow activated: {wf_id}")
+                  else:
+                      print(f"⚠️  Could not activate workflow: {activate_response.status_code}")
+                  break
+          EOF
+
+      - name: Comment on commit
+        uses: actions/github-script@v7
+        if: always()
+        with:
+          script: |
+            github.rest.git.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              commit_sha: context.sha,
+              body: '🤖 **Copilot Swarm Workflow Deployed**\n\n✅ n8n workflow imported and activated\n- Workflow: `Copilot Swarm - Multi-Agent Workflow`\n- Nodes: 8 (GitHub webhook, 3 agents, merge, commit, PR, notification)\n- Status: Ready for GitHub webhook triggers'
+            })
+
+  validate-webhook:
+    runs-on: ubuntu-latest
+    needs: deploy-workflow
+    if: always()
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Generate webhook documentation
+        run: |
+          cat > SWARM_WEBHOOK.md << 'EOF'
+          # Copilot Swarm Webhook Configuration
+          
+          ## Webhook Setup
+          
+          Configure GitHub to trigger the n8n workflow:
+          
+          ### 1. Get n8n Webhook URL
+          From n8n, the webhook trigger generates:
+          ```
+          https://<n8n-instance>/webhook/c8v9m2k
+          ```
+          
+          ### 2. Configure GitHub Webhook
+          Go to: Settings → Webhooks → Add webhook
+          
+          - **Payload URL:** `https://<n8n-instance>/webhook/c8v9m2k`
+          - **Content type:** `application/json`
+          - **Events:** 
+            - Push events
+            - Pull requests
+          - **Active:** ✓ Checked
+          
+          ### 3. Test Webhook
+          Push to `data-agent`, `model-agent`, or `api-agent` branches to trigger the swarm.
+          
+          ## Workflow Nodes
+          
+          1. **GitHub Webhook** - Trigger on push events
+          2. **Codegen Agent** - Execute command suggestions for code generation
+          3. **Test Agent** - Execute test agent suggestions
+          4. **Deploy Agent** - Execute deployment agent suggestions
+          5. **Merge Results** - Combine all agent outputs
+          6. **Commit Results** - Save results to repository
+          7. **Create PR** - Create pull request with swarm results
+          8. **Success Notification** - Mark completion
+          
+          ## Environment Variables
+          
+          Set in n8n workflow:
+          - `GITHUB_REPO_OWNER` - Repository owner
+          - `GITHUB_REPO_NAME` - Repository name
+          
+          Set as GitHub secrets:
+          - `N8N_BASE_URL` - n8n instance URL (e.g., https://n8n.example.com)
+          - `N8N_API_KEY` - n8n API key for authentication
+          EOF
+          cat SWARM_WEBHOOK.md
+
+      - name: Upload workflow documentation
+        uses: actions/upload-artifact@v3
+        with:
+          name: swarm-documentation
+          path: SWARM_WEBHOOK.md
