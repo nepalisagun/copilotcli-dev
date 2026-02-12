@@ -23,8 +23,14 @@ NC='\033[0m' # No Color
 # Configuration
 API_URL="${API_URL:-http://localhost:8000}"
 LOG_FILE="${LOG_FILE:-predictions.log}"
+CSV_FILE="${CSV_FILE:-predictions.csv}"
 WATCH_MODE=false
 REFRESH_INTERVAL=60
+
+# Initialize CSV if doesn't exist
+if [ ! -f "$CSV_FILE" ]; then
+    echo "timestamp,ticker,predicted,actual,accuracy,geo_risk,vol_spike,feature_drift" > "$CSV_FILE"
+fi
 
 # Parse arguments
 if [ $# -lt 1 ]; then
@@ -168,20 +174,85 @@ try:
             pred = result.get('predictions', [0])[0]
             conf = result.get('confidence', 0)
             
-            # Log prediction for validation
+            # Analyze geopolitical risk from Yahoo RSS (FREE, no API key)
+            def analyze_yahoo_headlines(ticker):
+                """Parse Yahoo Finance RSS for geopolitical risk keywords."""
+                try:
+                    import urllib.request
+                    import xml.etree.ElementTree as ET
+                    from datetime import datetime, timedelta
+                    
+                    rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}"
+                    req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    
+                    with urllib.request.urlopen(req, timeout=5) as response:
+                        xml_data = response.read()
+                    
+                    root = ET.fromstring(xml_data)
+                    
+                    # Extract headlines from last 24h
+                    headlines = []
+                    risk_keywords = ['tariff', 'sanction', 'war', 'ban', 'china', 'restriction', 'export']
+                    risk_count = 0
+                    now = datetime.utcnow()
+                    
+                    for item in root.findall('.//item'):
+                        title_elem = item.find('title')
+                        pub_date_elem = item.find('pubDate')
+                        
+                        if title_elem is not None and title_elem.text:
+                            title = title_elem.text.lower()
+                            headlines.append(title)
+                            
+                            # Check for risk keywords
+                            for keyword in risk_keywords:
+                                if keyword in title:
+                                    risk_count += 1
+                                    break
+                    
+                    # Calculate geopolitical risk score (0-100%)
+                    if len(headlines) > 0:
+                        geo_risk = min(100, (risk_count / len(headlines)) * 100)
+                    else:
+                        geo_risk = 0
+                    
+                    return geo_risk, len(headlines)
+                
+                except Exception:
+                    return 0, 0  # Default: no risk if analysis fails
+            
+            # Log prediction to CSV with analysis
             from datetime import datetime
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            log_entry = f"{timestamp} | {ticker} | PRED: \${pred:.2f} | ACTUAL: pending | LOG_ONLY\n"
+            geo_risk, headline_count = analyze_yahoo_headlines(ticker)
             
+            csv_entry = f"{timestamp},{ticker},{pred:.2f},pending,-,{geo_risk:.1f},-,-\n"
+            
+            try:
+                with open("$CSV_FILE", "a") as csv:
+                    csv.write(csv_entry)
+            except Exception:
+                pass  # Continue even if logging fails
+            
+            # Also log to text file
+            log_entry = f"{timestamp} | {ticker} | PRED: \${pred:.2f} | GEO_RISK: {geo_risk:.1f}%\n"
             try:
                 with open("$LOG_FILE", "a") as log:
                     log.write(log_entry)
             except Exception:
-                pass  # Continue even if logging fails
+                pass
             
             print(f"\n\033[0;34m🔮 PREDICTION\033[0m")
             print(f"  Next Price: \033[0;32m\${pred:.2f}\033[0m")
             print(f"  Confidence: \033[0;35m{conf:.1%}\033[0m")
+            
+            # Show geopolitical risk
+            if geo_risk > 50:
+                print(f"  ⚠️  Geopolitical Risk: \033[0;31m{geo_risk:.1f}%\033[0m (HIGH)")
+            elif geo_risk > 20:
+                print(f"  ⚠️  Geopolitical Risk: \033[1;33m{geo_risk:.1f}%\033[0m (MODERATE)")
+            else:
+                print(f"  ✅ Geopolitical Risk: \033[0;32m{geo_risk:.1f}%\033[0m (LOW)")
             
             change = pred - close
             pct_change = (change / close * 100) if close else 0

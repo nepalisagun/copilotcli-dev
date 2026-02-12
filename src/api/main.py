@@ -364,11 +364,53 @@ class PredictionValidation(BaseModel):
 async def validate_prediction(validation: PredictionValidation):
     """
     Validate prediction against actual price.
-    Calculate accuracy and root cause if <85%.
+    Calculate accuracy and root cause if <85% (with zero-cost geopolitical analysis).
     """
     pred = validation.predicted
     actual = validation.actual
     accuracy = (1 - abs(pred - actual) / actual) * 100 if actual != 0 else 0
+    
+    # Analyze geopolitical risk from Yahoo RSS (FREE)
+    def analyze_yahoo_headlines(ticker):
+        """Parse Yahoo Finance RSS for geopolitical risk keywords (zero-cost)."""
+        try:
+            import urllib.request
+            import xml.etree.ElementTree as ET
+            
+            rss_url = f"https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}"
+            req = urllib.request.Request(rss_url, headers={'User-Agent': 'Mozilla/5.0'})
+            
+            with urllib.request.urlopen(req, timeout=5) as response:
+                xml_data = response.read()
+            
+            root = ET.fromstring(xml_data)
+            
+            headlines = []
+            risk_keywords = ['tariff', 'sanction', 'war', 'ban', 'china', 'restriction', 'export', 'embargo']
+            risk_count = 0
+            
+            for item in root.findall('.//item'):
+                title_elem = item.find('title')
+                if title_elem is not None and title_elem.text:
+                    title = title_elem.text.lower()
+                    headlines.append(title)
+                    
+                    for keyword in risk_keywords:
+                        if keyword in title:
+                            risk_count += 1
+                            break
+            
+            if len(headlines) > 0:
+                geo_risk = min(100, (risk_count / len(headlines)) * 100)
+            else:
+                geo_risk = 0
+            
+            return geo_risk, len(headlines), risk_count
+        
+        except Exception:
+            return 0, 0, 0
+    
+    geo_risk, headline_count, risk_headlines = analyze_yahoo_headlines(validation.ticker)
     
     result = {
         "ticker": validation.ticker,
@@ -376,23 +418,42 @@ async def validate_prediction(validation: PredictionValidation):
         "predicted": pred,
         "actual": actual,
         "accuracy": round(accuracy, 1),
-        "status": "✅ ACCURATE" if accuracy >= 85 else "⚠️  ROOT CAUSE NEEDED"
+        "status": "✅ ACCURATE" if accuracy >= 85 else "⚠️  ROOT CAUSE NEEDED",
+        "geopolitical_risk": {
+            "score": round(geo_risk, 1),
+            "interpretation": "HIGH" if geo_risk > 50 else ("MODERATE" if geo_risk > 20 else "LOW"),
+            "headlines_analyzed": headline_count,
+            "risk_headlines": risk_headlines,
+            "keywords_checked": ['tariff', 'sanction', 'war', 'ban', 'china', 'restriction', 'export', 'embargo']
+        }
     }
     
     if accuracy < 85:
         result["root_cause"] = {
-            "geopolitical": "Check NewsAPI for 'war/tariff/sanction' keywords",
-            "financial": f"Volume spike (check against 200% avg) or earnings date",
+            "geopolitical": f"Yahoo RSS analysis: {geo_risk:.1f}% risk ({risk_headlines} of {headline_count} headlines with risk keywords)",
+            "financial": "Volume spike (check against 200% avg) or earnings date",
             "algorithm": "Feature importance drift (RSI/MACD weights >20%)",
             "suggested_action": "Trigger retrain if 3+ days <85%"
         }
     
-    # Log to predictions.log
+    # Log to predictions CSV
     import os
-    log_dir = os.path.dirname("predictions.log") or "."
-    os.makedirs(log_dir, exist_ok=True)
-    with open("predictions.log", "a") as f:
-        f.write(f"{validation.timestamp} | {validation.ticker} | PRED: ${pred:.2f} | ACTUAL: ${actual:.2f} | ACC: {accuracy:.1f}%\n")
+    import csv
+    csv_file = "predictions.csv"
+    csv_dir = os.path.dirname(csv_file) or "."
+    os.makedirs(csv_dir, exist_ok=True)
+    
+    try:
+        # Ensure header exists
+        if not os.path.exists(csv_file):
+            with open(csv_file, "w") as f:
+                f.write("timestamp,ticker,predicted,actual,accuracy,geo_risk,vol_spike,feature_drift\n")
+        
+        # Append prediction record
+        with open(csv_file, "a") as f:
+            f.write(f"{validation.timestamp},{validation.ticker},{pred:.2f},{actual:.2f},{accuracy:.1f},{geo_risk:.1f},-,-\n")
+    except Exception:
+        pass
     
     return result
 
