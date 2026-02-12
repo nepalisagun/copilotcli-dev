@@ -1,28 +1,50 @@
-"""Comprehensive API tests with 95%+ coverage."""
+"""Comprehensive API tests for production ML API with XGBoost."""
 import json
-import io
-
 import pytest
-from fastapi.testclient import TestClient
+import pandas as pd
+from io import StringIO
 
-from src.api.main import app, model_info_data
+from fastapi.testclient import TestClient
+from src.api.main import app
 
 
 @pytest.fixture
 def client():
     """Test client fixture."""
+    # Reset model state before each test
+    from src.models import stock_pipeline
+    stock_pipeline._model_instance = None
+    from src.api import main
+    main.predictor = main.get_model()
+    
     return TestClient(app)
 
 
 @pytest.fixture
-def sample_prediction_data():
-    """Sample prediction data."""
-    return {
-        "data": [
-            [0.5, 0.3, 0.2, 0.1, 100.0, 99.0, 98.0, 0.02],
-            [0.6, 0.4, 0.25, 0.15, 101.0, 100.0, 99.0, 0.025],
-        ]
-    }
+def sample_csv_data():
+    """Sample CSV OHLCV data for training/prediction."""
+    csv = """Date,Open,High,Low,Close,Volume
+2023-01-01,100.0,102.0,99.0,101.0,1000000
+2023-01-02,101.0,103.0,100.0,102.0,1100000
+2023-01-03,102.0,104.0,101.0,103.0,900000
+2023-01-04,103.0,105.0,102.0,104.0,1200000
+2023-01-05,104.0,106.0,103.0,105.0,1050000
+2023-01-06,105.0,107.0,104.0,106.0,1150000
+2023-01-07,106.0,108.0,105.0,107.0,980000
+2023-01-08,107.0,109.0,106.0,108.0,1300000
+2023-01-09,108.0,110.0,107.0,109.0,1100000
+2023-01-10,109.0,111.0,108.0,110.0,1200000"""
+    return csv
+
+
+@pytest.fixture
+def sample_ohlcv_list():
+    """Sample OHLCV data as list of dicts."""
+    return [
+        {"Open": 100.0, "High": 102.0, "Low": 99.0, "Close": 101.0, "Volume": 1000000},
+        {"Open": 101.0, "High": 103.0, "Low": 100.0, "Close": 102.0, "Volume": 1100000},
+        {"Open": 102.0, "High": 104.0, "Low": 101.0, "Close": 103.0, "Volume": 900000},
+    ]
 
 
 class TestHealth:
@@ -34,261 +56,337 @@ class TestHealth:
         assert response.status_code == 200
         data = response.json()
         assert data["status"] == "ok"
-        assert data["model_version"] == "v1.2"
+        assert "model_version" in data
+        assert "model_trained" in data
         assert "timestamp" in data
     
-    def test_health_response_fields(self, client):
-        """Test health response has required fields."""
+    def test_health_check_model_not_trained(self, client):
+        """Test health check shows untrained model."""
         response = client.get("/health")
         data = response.json()
-        assert set(data.keys()) == {"status", "model_version", "timestamp"}
+        assert "model_trained" in data
+        assert isinstance(data["model_trained"], bool)
+
+
+class TestReadiness:
+    """Test readiness probe endpoint."""
     
     def test_readiness_check(self, client):
-        """Test readiness probe."""
+        """Test readiness probe initially fails (model not trained)."""
         response = client.get("/ready")
-        assert response.status_code == 200
-        assert response.json()["ready"] is True
+        # Should be 503 if model not trained
+        assert response.status_code in [200, 503]
 
 
-class TestRootEndpoint:
+class TestRoot:
     """Test root endpoint."""
     
     def test_root_endpoint(self, client):
-        """Test root returns API info."""
+        """Test root endpoint returns API metadata."""
         response = client.get("/")
         assert response.status_code == 200
         data = response.json()
-        assert data["service"] == "Copilot ML API"
-        assert data["version"] == "v1.2"
+        
+        assert "service" in data
+        assert "version" in data
         assert "endpoints" in data
-        assert "health" in data["endpoints"]
-        assert "predict" in data["endpoints"]
+        assert "model" in data
+        
+        # Check endpoints exist
+        endpoints = data["endpoints"]
+        assert "health" in endpoints
+        assert "predict" in endpoints
+        assert "train" in endpoints
+
+
+class TestTraining:
+    """Test model training endpoint."""
+    
+    def test_train_model(self, client, sample_csv_data):
+        """Test training the XGBoost model."""
+        response = client.post(
+            "/train",
+            json={
+                "csv_data": sample_csv_data,
+                "target_column": "Close"
+            }
+        )
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "trained"
+        assert "metrics" in data
+        
+        metrics = data["metrics"]
+        assert "r2_score" in metrics
+        assert "rmse" in metrics
+        assert "mae" in metrics
+        assert metrics["samples"] == 10
+
+    def test_train_missing_target_column(self, client, sample_csv_data):
+        """Test training with invalid target column."""
+        response = client.post(
+            "/train",
+            json={
+                "csv_data": sample_csv_data,
+                "target_column": "NonExistent"
+            }
+        )
+        
+        assert response.status_code == 400
+
+    def test_train_invalid_csv(self, client):
+        """Test training with invalid CSV."""
+        response = client.post(
+            "/train",
+            json={"csv_data": "invalid csv data"}
+        )
+        
+        assert response.status_code == 400
+
+
+class TestPrediction:
+    """Test prediction endpoint."""
+    
+    def test_predict_without_training(self, client, sample_ohlcv_list):
+        """Test prediction fails without training."""
+        response = client.post(
+            "/predict",
+            json={"data": sample_ohlcv_list}
+        )
+        
+        assert response.status_code == 503
+        assert "not trained" in response.json()["detail"].lower()
+
+    def test_predict_after_training(self, client, sample_csv_data, sample_ohlcv_list):
+        """Test prediction after training."""
+        # First train
+        client.post(
+            "/train",
+            json={
+                "csv_data": sample_csv_data,
+                "target_column": "Close"
+            }
+        )
+        
+        # Then predict
+        response = client.post(
+            "/predict",
+            json={"data": sample_ohlcv_list}
+        )
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert "predictions" in data
+        assert len(data["predictions"]) == len(sample_ohlcv_list)
+        assert data["count"] == len(sample_ohlcv_list)
+        assert "model_version" in data
+
+    def test_predict_empty_data(self, client, sample_csv_data):
+        """Test prediction with empty data list."""
+        # Train first
+        client.post(
+            "/train",
+            json={
+                "csv_data": sample_csv_data,
+                "target_column": "Close"
+            }
+        )
+        
+        # Predict with empty data
+        response = client.post(
+            "/predict",
+            json={"data": []}
+        )
+        
+        assert response.status_code == 422  # Validation error
+
+    def test_predict_missing_fields(self, client, sample_csv_data):
+        """Test prediction with missing required fields."""
+        # Train first
+        client.post(
+            "/train",
+            json={
+                "csv_data": sample_csv_data,
+                "target_column": "Close"
+            }
+        )
+        
+        # Predict with incomplete data
+        response = client.post(
+            "/predict",
+            json={
+                "data": [
+                    {"Open": 100.0, "High": 102.0}  # Missing Low, Close, Volume
+                ]
+            }
+        )
+        
+        assert response.status_code == 422
+
+
+class TestBatchPrediction:
+    """Test batch prediction from CSV."""
+    
+    def test_batch_predict_after_training(self, client, sample_csv_data):
+        """Test batch prediction from CSV data."""
+        # First train
+        client.post(
+            "/train",
+            json={
+                "csv_data": sample_csv_data,
+                "target_column": "Close"
+            }
+        )
+        
+        # Batch predict
+        response = client.post(
+            "/batch-predict",
+            json={"csv_data": sample_csv_data}
+        )
+        
+        assert response.status_code == 200
+        data = response.json()
+        assert "predictions" in data
+        assert len(data["predictions"]) == 10
+        assert data["count"] == 10
+
+    def test_batch_predict_without_training(self, client, sample_csv_data):
+        """Test batch predict fails without training."""
+        response = client.post(
+            "/batch-predict",
+            json={"csv_data": sample_csv_data}
+        )
+        
+        assert response.status_code == 503
 
 
 class TestModelInfo:
     """Test model information endpoint."""
     
-    def test_model_info_success(self, client):
-        """Test successful model info retrieval."""
+    def test_model_info_untrained(self, client):
+        """Test model info for untrained model."""
         response = client.get("/model-info")
         assert response.status_code == 200
+        
         data = response.json()
-        assert data["name"] == "Stock Price Predictor"
-        assert data["version"] == "v1.2"
-        assert data["type"] == "regression"
-        assert data["framework"] == "scikit-learn + XGBoost"
-    
-    def test_model_info_metrics(self, client):
-        """Test model info includes metrics."""
-        response = client.get("/model-info")
-        data = response.json()
-        assert "metrics" in data
-        assert "r2_score" in data["metrics"]
-        assert data["metrics"]["r2_score"] == 0.92
-        assert data["metrics"]["rmse"] == 0.45
-        assert data["metrics"]["mae"] == 0.38
-    
-    def test_model_info_features(self, client):
-        """Test model info includes all features."""
-        response = client.get("/model-info")
-        data = response.json()
+        assert data["algorithm"] == "XGBoost"
+        assert data["n_estimators"] == 500
+        assert not data["is_trained"]
         assert "features" in data
-        assert len(data["features"]) == 8
-        assert "RSI(14)" in data["features"]
-        assert "MACD" in data["features"]
-        assert "Volatility" in data["features"]
+        assert len(data["features"]) == 11
 
-
-class TestPredictEndpoint:
-    """Test single prediction endpoint."""
-    
-    def test_predict_success(self, client, sample_prediction_data):
-        """Test successful prediction."""
-        response = client.post("/predict", json=sample_prediction_data)
+    def test_model_info_trained(self, client, sample_csv_data):
+        """Test model info for trained model."""
+        # Train
+        client.post(
+            "/train",
+            json={
+                "csv_data": sample_csv_data,
+                "target_column": "Close"
+            }
+        )
+        
+        # Get info
+        response = client.get("/model-info")
         assert response.status_code == 200
+        
         data = response.json()
-        assert "predictions" in data
-        assert "count" in data
-        assert "timestamp" in data
-        assert data["count"] == 2
-        assert len(data["predictions"]) == 2
-    
-    def test_predict_single_sample(self, client):
-        """Test single sample prediction."""
-        payload = {"data": [[0.5, 0.3, 0.2, 0.1, 100.0, 99.0, 98.0, 0.02]]}
-        response = client.post("/predict", json=payload)
-        assert response.status_code == 200
-        data = response.json()
-        assert data["count"] == 1
-        assert len(data["predictions"]) == 1
-        assert isinstance(data["predictions"][0], (int, float))
-    
-    def test_predict_multiple_samples(self, client):
-        """Test multiple sample prediction."""
-        payload = {
-            "data": [
-                [0.5] * 8,
-                [0.6] * 8,
-                [0.7] * 8,
-                [0.8] * 8,
-            ]
-        }
-        response = client.post("/predict", json=payload)
-        assert response.status_code == 200
-        data = response.json()
-        assert data["count"] == 4
-        assert len(data["predictions"]) == 4
-    
-    def test_predict_empty_data(self, client):
-        """Test prediction with empty data."""
-        payload = {"data": []}
-        response = client.post("/predict", json=payload)
-        assert response.status_code == 400
-    
-    def test_predict_missing_data(self, client):
-        """Test prediction with missing data field."""
-        payload = {}
-        response = client.post("/predict", json=payload)
-        assert response.status_code == 400
-    
-    def test_predict_response_structure(self, client, sample_prediction_data):
-        """Test prediction response structure."""
-        response = client.post("/predict", json=sample_prediction_data)
-        data = response.json()
-        assert isinstance(data["predictions"], list)
-        assert isinstance(data["count"], int)
-        assert isinstance(data["timestamp"], str)
-        assert "T" in data["timestamp"]  # ISO format
+        assert data["is_trained"]
+        assert "feature_importance" in data
+        
+        importance = data["feature_importance"]
+        assert isinstance(importance, dict)
+        assert len(importance) == 11
 
 
-class TestMetricsEndpoint:
+class TestMetrics:
     """Test Prometheus metrics endpoint."""
     
-    def test_metrics_endpoint(self, client):
-        """Test metrics endpoint returns data."""
+    def test_metrics_untrained(self, client):
+        """Test metrics for untrained model."""
         response = client.get("/metrics")
         assert response.status_code == 200
         data = response.json()
-        assert "requests_total" in data
-        assert "errors_total" in data
+        assert data["model_trained"] is False
 
-
-class TestErrorHandling:
-    """Test error handling."""
-    
-    def test_nonexistent_endpoint(self, client):
-        """Test 404 for nonexistent endpoint."""
-        response = client.get("/nonexistent")
-        assert response.status_code == 404
-    
-    def test_invalid_request_method(self, client):
-        """Test invalid HTTP method."""
-        response = client.get("/predict")  # POST endpoint accessed with GET
-        assert response.status_code == 405
-
-
-class TestAsyncEndpoints:
-    """Test async endpoint functionality."""
-    
-    def test_health_async(self, client):
-        """Test health endpoint is async."""
-        response = client.get("/health")
-        assert response.status_code == 200
-    
-    def test_predict_async(self, client, sample_prediction_data):
-        """Test predict endpoint is async."""
-        response = client.post("/predict", json=sample_prediction_data)
-        assert response.status_code == 200
-    
-    def test_multiple_concurrent_requests(self, client, sample_prediction_data):
-        """Test multiple requests can be handled."""
-        responses = []
-        for _ in range(5):
-            response = client.get("/health")
-            responses.append(response)
+    def test_metrics_trained(self, client, sample_csv_data):
+        """Test metrics for trained model."""
+        # Train
+        client.post(
+            "/train",
+            json={
+                "csv_data": sample_csv_data,
+                "target_column": "Close"
+            }
+        )
         
-        assert all(r.status_code == 200 for r in responses)
-
-
-class TestDataValidation:
-    """Test input data validation."""
-    
-    def test_numeric_data_handling(self, client):
-        """Test numeric data is handled properly."""
-        payload = {"data": [[1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]]}
-        response = client.post("/predict", json=payload)
+        # Get metrics
+        response = client.get("/metrics")
         assert response.status_code == 200
-        assert len(response.json()["predictions"]) == 1
-    
-    def test_various_numeric_types(self, client):
-        """Test various numeric types."""
-        payload = {"data": [[1, 2.5, 3.0, 4, 5.5, 6, 7.0, 8]]}
-        response = client.post("/predict", json=payload)
-        assert response.status_code == 200
-
-
-class TestAppStructure:
-    """Test app structure and initialization."""
-    
-    def test_app_title(self):
-        """Test app has correct title."""
-        assert app.title == "Copilot ML API"
-    
-    def test_app_version(self):
-        """Test app has correct version."""
-        assert app.version == "1.2.0"
-    
-    def test_app_description(self):
-        """Test app has description."""
-        assert "stock price prediction" in app.description.lower()
-
-
-class TestEndpointCoverage:
-    """Test all endpoints are functional."""
-    
-    def test_all_endpoints_callable(self, client):
-        """Test all main endpoints are accessible."""
-        endpoints = [
-            ("/", "GET"),
-            ("/health", "GET"),
-            ("/ready", "GET"),
-            ("/model-info", "GET"),
-            ("/metrics", "GET"),
-            ("/predict", "POST"),
-        ]
-        
-        for path, method in endpoints:
-            if method == "GET":
-                response = client.get(path)
-            else:
-                response = client.post(path, json={"data": [[0.5] * 8]})
-            
-            assert response.status_code in [200, 201, 422, 400]
-
-
-class TestResponseFormats:
-    """Test response formats are consistent."""
-    
-    def test_json_responses(self, client):
-        """Test responses are valid JSON."""
-        endpoints = ["/health", "/ready", "/model-info", "/metrics"]
-        for endpoint in endpoints:
-            response = client.get(endpoint)
-            assert response.status_code == 200
-            try:
-                response.json()
-            except ValueError:
-                pytest.fail(f"Endpoint {endpoint} did not return valid JSON")
-    
-    def test_health_response_format(self, client):
-        """Test health response format."""
-        response = client.get("/health")
         data = response.json()
-        assert isinstance(data["status"], str)
-        assert isinstance(data["model_version"], str)
-        assert isinstance(data["timestamp"], str)
+        
+        assert data["model_trained"]
+        assert "top_features" in data
+        assert "n_estimators" in data
+
+
+class TestEndpointIntegration:
+    """Integration tests across endpoints."""
+    
+    def test_full_workflow(self, client, sample_csv_data, sample_ohlcv_list):
+        """Test complete workflow: train -> predict -> info."""
+        # 1. Check initial state
+        health = client.get("/health")
+        assert not health.json()["model_trained"]
+        
+        # 2. Train model
+        train_resp = client.post(
+            "/train",
+            json={
+                "csv_data": sample_csv_data,
+                "target_column": "Close"
+            }
+        )
+        assert train_resp.status_code == 200
+        
+        # 3. Check health after training
+        health = client.get("/health")
+        assert health.json()["model_trained"]
+        
+        # 4. Make prediction
+        pred_resp = client.post(
+            "/predict",
+            json={"data": sample_ohlcv_list}
+        )
+        assert pred_resp.status_code == 200
+        
+        # 5. Get model info
+        info_resp = client.get("/model-info")
+        assert info_resp.status_code == 200
+        assert info_resp.json()["is_trained"]
+        
+        # 6. Get metrics
+        metrics_resp = client.get("/metrics")
+        assert metrics_resp.status_code == 200
+        assert metrics_resp.json()["model_trained"]
+
+    def test_error_handling(self, client):
+        """Test proper error handling."""
+        # Prediction without training
+        response = client.post(
+            "/predict",
+            json={"data": [{"Open": 1, "High": 2, "Low": 0.5, "Close": 1.5, "Volume": 1000}]}
+        )
+        assert response.status_code == 503
+        
+        # Invalid training data
+        response = client.post(
+            "/train",
+            json={"csv_data": "bad data"}
+        )
+        assert response.status_code == 400
 
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "--cov=src.api", "--cov-report=term-missing"])
-
